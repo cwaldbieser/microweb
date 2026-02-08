@@ -1,8 +1,9 @@
-from time import sleep
+import asyncio
 
 from machine import UART, Pin
 
-READ_TIMEOUT = 10
+temp_reporting_mode = False
+last_report_line = ""
 
 
 def init_xyt01_uart():
@@ -10,82 +11,76 @@ def init_xyt01_uart():
     Initialize the XY-T01 UART.
     """
     uart = UART(2, baudrate=9600, tx=Pin(4), rx=Pin(5))
-    print("Sendng 'start' command to XY-T01 ...")
-    uart.write("start")
-    sleep(1)
-    while uart.any():
-        print(uart.readline())
     return uart
 
 
-def get_temperature(uart):
+def start_temperature_report(uart):
+    global temp_reporting_mode
+    uart.write("start")
+    temp_reporting_mode = True
+
+
+def stop_temperature_reporting_mode(uart):
+    global temp_reporting_mode
+    uart.write("stop")
+    temp_reporting_mode = False
+
+
+async def read_from_uart(uart):
+    global last_report_line
+    chunks = []
+    while True:
+        if uart.any():
+            chunk = uart.read()
+            if chunk:
+                print(f"UART received: {chunk}")
+                chunks.append(chunk)
+                if b"\r\n" in chunk:
+                    combined = b"".join(chunks)
+                    chunks.clear()
+                    lines = combined.split(b"\r\n")
+                    # Change weird celsius symbol encoding to UTF-8.
+                    last_report_line = (
+                        lines[-2].replace(b"\xa1\xe6", b"\xe2\x84\x83").decode("utf-8")
+                    )
+                    last_chunk = lines[-1]
+                    if last_chunk != b"":
+                        chunks.append(last_chunk)
+        await asyncio.sleep_ms(10)
+
+
+def get_temperature():
     """
-    Stores the current temperature via the XY-T01 UART interface
+    Get the last reported temperature.
     """
+    if not temp_reporting_mode:
+        print("Must start temperature report before reading temperature!")
+        return None, None
     celsius = None
     farenheit = None
-    for line in read_uart(uart):
-        print(f"Raw line: {line}", end="")
-        if line.strip() == "":
-            continue
-        celsius, relay_state = parse_report_line(line)
-        if celsius is None:
-            print("Returned None, None.  Skipping ...")
-            continue
-        farenheit = celsius * (9 / 5) + 32
-        print(f"Temperature: {celsius:.1f} C, {farenheit:.1f} F")
-        print(f"Relay state: {relay_state}")
-        print("--------------------")
+    celsius, relay_state = parse_report_line()
+    if celsius is None:
+        print("Returned None, None.  Skipping ...")
+        return None, None
+    farenheit = celsius * (9 / 5) + 32
+    print(f"Temperature: {celsius:.1f} C, {farenheit:.1f} F")
+    print(f"Relay state: {relay_state}")
+    print("--------------------")
     return celsius, farenheit
 
 
-def read_complete_line_from_uart(uart):
-    parts = []
-    for n in range(READ_TIMEOUT):
-        print(f"Attempt {n}:")
-        if uart.any():
-            x = uart.readline()
-            print(f"Read the follwing data from the UART: {x}")
-            parts.append(x)
-            condition = x.endswith(b"\r\n")
-            if condition:
-                return b"".join(parts)
-        sleep(1)
-    return None
-
-
-def read_uart(uart):
-    """
-    Read from the XY-T01 UART (serial interface).
-    """
-    print("Entered read_uart().")
-    print(f"uart.any(): {uart.any()}")
-    while uart.any():
-        x = read_complete_line_from_uart(uart)
-        if x is None:
-            continue
-        x = x.replace(b"\xa1\xe6", b"\xe2\x84\x83")
-        try:
-            decoded = x.decode()
-        except UnicodeError:
-            print(f"Could not decode to ASCII: {x}")
-            return ""
-        yield decoded
-
-
-def parse_report_line(line):
+def parse_report_line():
     """
     Parse a report line.
     Returns celcius, relay_state.
     """
-    line = line.strip()
-    parts = line.split(",")
+    parts = last_report_line.split(",")
     if len(parts) != 2:
         return None, None
     try:
         celsius = float(parts[0][:-1])
     except ValueError:
-        print(f"Could not parse: {line}")
+        print(f"Could not parse: {last_report_line}")
         return None, None
     if parts[1] == "OP":
         relay_state = "CLOSED"
