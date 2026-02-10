@@ -41,9 +41,10 @@ def clean_bytes(bstring):
 async def request_config(uart):
     global uart_mode
     global next_mode
-    uart_mode = MODE_STOP_REPORTING
-    next_mode = MODE_READ_CONFIGURATION
-    xyt01_config.clear()
+    if uart_mode not in (MODE_STOP_REPORTING, MODE_READ_CONFIGURATION):
+        uart_mode = MODE_STOP_REPORTING
+        next_mode = MODE_READ_CONFIGURATION
+        xyt01_config.clear()
     while uart_mode != MODE_START_REPORTING:
         await asyncio.sleep_ms(100)
     return dict(xyt01_config)
