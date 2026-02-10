@@ -1,13 +1,16 @@
 #! /usr/bin/env python
 
 import asyncio
+import json
 from time import sleep
 
 import network
 from microdot import Microdot
 
 from thermolib.temperature import (get_temperature, init_xyt01_uart,
-                                   read_from_uart, start_temperature_report)
+                                   read_from_uart, request_config,
+                                   start_temperature_report)
+import thermolib.temperature
 from wificonfig import passwd as wifi_passwd
 from wificonfig import ssid
 
@@ -33,9 +36,10 @@ print("Connected! IP address:", ip_addr)
 print(f"Device should be reachable at http://{new_hostname}.local")
 
 # Start UART reporting
+thermolib.temperature.debug = False
 uart = init_xyt01_uart()
 print("UART initialized.")
-start_temperature_report(uart)
+start_temperature_report()
 print("Started temperature reporting mode.")
 
 # Web server
@@ -53,6 +57,41 @@ async def index(request):
             "<html><head><meta http-equiv='refresh' content='60'></head><body>"
             "<h1 style='font-size: 48px;'>"
             f"Temperature {temp_c:.1f} ℃ ({temp_f:.1f} ℉) </h1></body>"
+        ),
+        200,
+        {"Content-Type": "text/html; charset=utf-8"},
+    )
+
+
+@app.route("/settings")
+async def settings(request):
+    print("REQUESTING CONFIG")
+    config = await request_config(uart)
+    print(f"CONFIG: {json.dumps(config)}")
+    return (
+        (
+            "<html>"
+            "<head></head>"
+            "<body>"
+            "<table style='font-size: 48px; text-align: right;'>"
+            "<thead><td>Setting</td><td>Value</td></thead>"
+            "<tbody>"
+            "<tr><td>Mode</td>"
+            f"<td>{config['mode']}</td></tr>"
+            "<tr><td>Target Temperature</td>"
+            f"<td>{config['target_temperature']}</td></tr>"
+            "<tr><td>Hysteresis Temperature</td>"
+            f"<td>{config['hysteresis_temperature']}</td></tr>"
+            "<tr><td>Alarm Temperature</td>"
+            f"<td>{config['alarm_temperature']}</td></tr>"
+            "<tr><td>Delay Starting Time</td>"
+            f"<td>{config['delay_starting_time']}</td></tr>"
+            "<tr><td>Temperature Correction</td>"
+            f"<td>{config['temperature_correction']}</td></tr>"
+            "</tbody>"
+            "</table>"
+            "</body>"
+            "</html>"
         ),
         200,
         {"Content-Type": "text/html; charset=utf-8"},

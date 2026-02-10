@@ -2,8 +2,15 @@ import asyncio
 
 from machine import UART, Pin
 
-temp_reporting_mode = False
+MODE_UNINITIALIZED = -1
+MODE_START_REPORTING = 0
+MODE_STOP_REPORTING = 1
+MODE_READ_CONFIGURATION = 2
+debug = False
+uart_mode = MODE_UNINITIALIZED
 last_report_line = ""
+next_mode = None
+xyt01_config = {}
 
 
 def init_xyt01_uart():
@@ -14,58 +21,164 @@ def init_xyt01_uart():
     return uart
 
 
-def start_temperature_report(uart):
-    global temp_reporting_mode
-    uart.write("start")
-    temp_reporting_mode = True
+def start_temperature_report():
+    global uart_mode
+    uart_mode = MODE_START_REPORTING
 
 
-def stop_temperature_reporting_mode(uart):
-    global temp_reporting_mode
-    uart.write("stop")
-    temp_reporting_mode = False
+def stop_temperature_report():
+    global uart_mode
+    global next_mode
+    uart_mode = MODE_STOP_REPORTING
+    next_mode = MODE_UNINITIALIZED
+
+
+def clean_bytes(bstring):
+    bstring = bstring.replace(b"\xa1\xe6", b"\xe2\x84\x83")
+    return bstring
+
+
+async def request_config(uart):
+    global uart_mode
+    global next_mode
+    uart_mode = MODE_STOP_REPORTING
+    next_mode = MODE_READ_CONFIGURATION
+    xyt01_config.clear()
+    while uart_mode != MODE_START_REPORTING:
+        await asyncio.sleep_ms(100)
+    return dict(xyt01_config)
 
 
 async def read_from_uart(uart):
-    global last_report_line
-    chunks = []
+    global uart_mode
     while True:
+        if uart_mode == MODE_START_REPORTING:
+            await asyncio.create_task(read_temperature_report_from_uart(uart))
+        elif uart_mode == MODE_STOP_REPORTING:
+            await asyncio.create_task(read_until_down_code_from_uart(uart))
+            if next_mode:
+                uart_mode = next_mode
+            else:
+                uart_mode = MODE_UNINITIALIZED
+        elif uart_mode == MODE_READ_CONFIGURATION:
+            await asyncio.sleep(1)
+            await asyncio.create_task(read_configuration_from_uart(uart))
+            uart_mode = MODE_START_REPORTING
+        else:
+            await asyncio.sleep_ms(100)
+
+
+async def read_configuration_from_uart(uart):
+    uart.write("read")
+    chunks = []
+    while uart_mode == MODE_READ_CONFIGURATION:
         if uart.any():
             chunk = uart.read()
             if chunk:
-                print(f"UART received: {chunk}")
+                if debug:
+                    print(f"UART received: {chunk}")
+                chunks.append(chunk)
+                if b"\r\n" in chunk:
+                    combined = b"".join(chunks)
+                    lines = combined.split(b"\r\n")
+                    # Change weird celsius symbol encoding to UTF-8.
+                    last_line = (
+                        clean_bytes(lines[-2]).decode("utf-8")
+                    )
+                    if last_line == "DOWN":
+                        break
+        await asyncio.sleep(1)
+    bstring = b"".join(chunks)
+    text = clean_bytes(bstring).decode("utf-8")
+    lines = text.split("\r\n")
+    print(f"lines: {lines}")
+    xyt01_config.clear()
+    if len(lines) != 4:
+        return
+    fields = lines[0].split(",")
+    xyt01_config["mode"] = fields[0]
+    xyt01_config["target_temperature"] = fields[1]
+    xyt01_config["hysteresis_temperature"] = fields[2]
+    fields = lines[1].split(",")
+    xyt01_config["alarm_temperature"] = fields[0].split(":")[1]
+    xyt01_config["delay_starting_time"] = fields[1].split(":")[1]
+    xyt01_config["temperature_correction"] = fields[2].split(":")[1]
+
+
+async def read_until_down_code_from_uart(uart):
+    uart.write("stop")
+    await asyncio.sleep(1)
+    chunks = []
+    while uart_mode == MODE_STOP_REPORTING:
+        if uart.any():
+            chunk = uart.read()
+            if chunk:
+                if debug:
+                    print(f"(down code) UART received: {chunk}")
                 chunks.append(chunk)
                 if b"\r\n" in chunk:
                     combined = b"".join(chunks)
                     chunks.clear()
                     lines = combined.split(b"\r\n")
                     # Change weird celsius symbol encoding to UTF-8.
-                    last_report_line = (
-                        lines[-2].replace(b"\xa1\xe6", b"\xe2\x84\x83").decode("utf-8")
+                    last_line = (
+                        clean_bytes(lines[-2]).decode("utf-8")
                     )
+                    if last_line == "DOWN":
+                        break
                     last_chunk = lines[-1]
                     if last_chunk != b"":
                         chunks.append(last_chunk)
-        await asyncio.sleep_ms(10)
+            await asyncio.sleep_ms(100)
+
+
+async def read_temperature_report_from_uart(uart):
+    uart.write("start")
+    await asyncio.sleep(1)
+    global last_report_line
+    chunks = []
+    while uart_mode == MODE_START_REPORTING:
+        if uart.any():
+            chunk = uart.read()
+            if chunk:
+                if debug:
+                    print(f"UART received: {chunk}")
+                chunks.append(chunk)
+                if b"\r\n" in chunk:
+                    combined = b"".join(chunks)
+                    chunks.clear()
+                    lines = combined.split(b"\r\n")
+                    # Change weird celsius symbol encoding to UTF-8.
+                    try:
+                        last_report_line = (
+                            clean_bytes(lines[-2]).decode("utf-8")
+                        )
+                    except UnicodeError:
+                        last_report_line = ""
+                        last_chunk = b"\r\n"
+                    last_chunk = lines[-1]
+                    if last_chunk != b"":
+                        chunks.append(last_chunk)
+        await asyncio.sleep_ms(100)
 
 
 def get_temperature():
     """
     Get the last reported temperature.
     """
-    if not temp_reporting_mode:
+    if uart_mode != MODE_START_REPORTING:
         print("Must start temperature report before reading temperature!")
         return None, None
     celsius = None
     farenheit = None
     celsius, relay_state = parse_report_line()
     if celsius is None:
-        print("Returned None, None.  Skipping ...")
         return None, None
     farenheit = celsius * (9 / 5) + 32
-    print(f"Temperature: {celsius:.1f} C, {farenheit:.1f} F")
-    print(f"Relay state: {relay_state}")
-    print("--------------------")
+    if debug:
+        print(f"Temperature: {celsius:.1f} C, {farenheit:.1f} F")
+        print(f"Relay state: {relay_state}")
+        print("--------------------")
     return celsius, farenheit
 
 
@@ -80,7 +193,8 @@ def parse_report_line():
     try:
         celsius = float(parts[0][:-1])
     except ValueError:
-        print(f"Could not parse: {last_report_line}")
+        if debug:
+            print(f"Could not parse: {last_report_line}")
         return None, None
     if parts[1] == "OP":
         relay_state = "CLOSED"
