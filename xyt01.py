@@ -154,7 +154,9 @@ class Xyt01SerialInterface(object):
                         chunks.extend(chunks[pos:])
                         text = clean_bytes(completed).decode("utf-8")
                         lines = text.split("\r\n")
-                        temp_c, _ = self.parse_report_line(lines[-2])
+                        temp_c, relay_state = self.parse_report_line(lines[-2])
+                        if self.debug:
+                            print(f"Parsed temperature: {temp_c}, relay_state: {relay_state}")
                         if temp_c is not None:
                             self.temp_c = temp_c
             else:
@@ -277,16 +279,20 @@ class Xyt01SerialInterface(object):
     def on_enter_setting_temp(self):
         queue = self.request_queue
         req, temp_c = queue[0]
-        itemp_c = int(temp_c)
+        ftemp_c = float(temp_c)
+        itemp_c = int(ftemp_c)
         if itemp_c >= -50 and itemp_c <= -1:
             stemp_c = f"{itemp_c:03d}"
         elif itemp_c >= 0 and itemp_c < 100:
-            stemp_c = f"{temp_c:04.1}"
+            stemp_c = f"{ftemp_c:04.1f}"
         elif itemp_c >= 100 and itemp_c <= 110:
             stemp_c = f"{itemp_c}:3d"
         else:
             raise ValueError(f"'{temp_c}' is an invalid temperature setting.")
-        self.uart.write(f"S:{stemp_c}")
+        value = f"S:{stemp_c}"
+        self.uart.write(value)
+        if self.debug:
+            print(f"Wrote '{value}' to UART.")
         self.down_task = asyncio.create_task(self.read_down_code())
 
     def on_enter_notifying(self):

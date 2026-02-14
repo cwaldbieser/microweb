@@ -7,9 +7,9 @@ from time import sleep
 import network
 from microdot import Microdot
 
-from xyt01 import Xyt01SerialInterface
 from wificonfig import passwd as wifi_passwd
 from wificonfig import ssid
+from xyt01 import Xyt01SerialInterface
 
 # network configuration
 new_hostname = "thermostat01"
@@ -89,6 +89,57 @@ async def settings(request):
         200,
         {"Content-Type": "text/html; charset=utf-8"},
     )
+
+
+@app.route("/set-temperature", methods=["GET", "POST"])
+async def set_temperature(request):
+    if request.method == "GET":
+        return (
+            (
+                "<html>"
+                "<head>"
+                "<title>Set Target Temperature</title>"
+                "</head>"
+                "<body>"
+                "<form method='POST' action=''>"
+                "   <div style='display: block; font-size:40pt;'>"
+                "   <label for='temperature'>Target Temperature</label>"
+                "   <input name='temperature' type='number' step='0.1' value='30' "
+                "       style='font-size:40pt;' />"
+                "   <label for='unit'>Unit</label>"
+                "   <input name='unit' type='radio' value='C' checked"
+                "       style='font-size:40pt;'>℃"
+                "   <input name='unit' type='radio' value='F'"
+                "       style='font-size:40pt;'>℉"
+                "   </div>"
+                "   <button type='submit'>Submit</button>"
+                "</form>"
+                "</body>"
+                "</html>"
+            ),
+            200,
+            {"Content-Type": "text/html; charset=utf-8"},
+        )
+    elif request.method == "POST":
+        temperature = request.form.get("temperature")
+        unit = request.form.get("unit")
+        if unit == "F":
+            temperature = round((float(temperature) - 32) * (5 / 9), 1)
+        await uart.set_target_temperature(temperature)
+        return (
+            (
+                "<html>"
+                "<head>"
+                "<title>Set Target Temperature</title>"
+                "</head>"
+                "<body style='font-size:40pt;'>"
+                f"Target temperature set to {temperature} {unit}"
+                "</body>"
+                "</html>"
+            ),
+            200,
+            {"Content-Type": "text/html; charset=utf-8"},
+        )
 
 
 async def main():
