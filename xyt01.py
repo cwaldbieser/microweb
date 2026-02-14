@@ -337,11 +337,11 @@ class Xyt01SerialInterface(object):
 
     async def request_settings(self):
         self.request_queue.append((REQ_READ_CFG, None))
-        result = await self.read_notification_list.get_result(
-            self.on_read_result_ready()
-        )
+        task = self.read_notification_list.get_result(self.on_read_result_ready())
+        result = await task
         return result
 
     async def set_target_temperature(self, temp_c):
         self.request_queue.append((REQ_SET_TEMP, temp_c))
-        await self.set_temp_notification_list.get_result(self.on_set_temp_complete())
+        task = self.set_temp_notification_list.get_result(self.on_set_temp_complete())
+        await task
