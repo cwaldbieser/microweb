@@ -2,193 +2,337 @@ import asyncio
 
 from machine import UART, Pin
 
-MODE_UNINITIALIZED = -1
-MODE_START_REPORTING = 0
-MODE_STOP_REPORTING = 1
-MODE_READ_CONFIGURATION = 2
-debug = False
-uart_mode = MODE_UNINITIALIZED
-last_report_line = ""
-next_mode = None
-xyt01_config = {}
+REQ_READ_CFG = "READ_CFG"
+REQ_SET_TEMP = "SET_TEMP"
 
 
-def init_xyt01_uart():
-    """
-    Initialize the XY-T01 UART.
-    """
-    uart = UART(2, baudrate=9600, tx=Pin(4), rx=Pin(5))
-    return uart
+class InvalidTransitionError(Exception):
+    pass
 
 
-def start_temperature_report():
-    global uart_mode
-    uart_mode = MODE_START_REPORTING
+class FSM(object):
+
+    def __init__(self, debug=False):
+        self.debug = debug
+        self.state = "IDLE"
+        self.transitions = {
+            ("IDLE", "initialize_reporting"): "STREAMING",
+            ("STREAMING", "request_detected"): "STOPPING",
+            ("STOPPING", "receive_down"): {
+                "is_read_request": "READING_CFG",
+                "is_temp_request": "SETTING_TEMP",
+            },
+            ("READING_CFG", "receive_down"): "NOTIFYING",
+            ("SETTING_TEMP", "receive_down"): "NOTIFYING",
+            ("NOTIFYING", "dispatch_result"): "STREAMING",
+        }
+
+    def trigger(self, event, model):
+        target = self.transitions[(self.state, event)]
+        if isinstance(target, dict):
+            for k, v in target.items():
+                predicate = getattr(model, k)
+                if predicate():
+                    self.state = v
+                    if self.debug:
+                        print(f"Event '{event}' -> state '{self.state}'")
+                    self.handle_enter_state(model)
+                    return
+            msg = (
+                f"No valid transition from state '{self.state}' given event '{event}'."
+            )
+            raise InvalidTransitionError(msg)
+        self.state = target
+        if self.debug:
+            print(f"Event '{event}' -> state '{self.state}'")
+        self.handle_enter_state(model)
+
+    def handle_enter_state(self, model):
+        handler_name = f"on_enter_{self.state}".lower()
+        if self.debug:
+            print(f"Looking for handler '{handler_name}' on model ...")
+        if hasattr(model, handler_name):
+            if self.debug:
+                print("Handler exists.  Calling ...")
+            handler = getattr(model, handler_name)
+            handler()
+            if self.debug:
+                print("Handler complete.")
 
 
-def stop_temperature_report():
-    global uart_mode
-    global next_mode
-    uart_mode = MODE_STOP_REPORTING
-    next_mode = MODE_UNINITIALIZED
+def clean_bytes(bstring):
+    return bstring.replace(b"\xa1\xe6", b"\xe2\x84\x83")
 
 
-async def request_config(uart):
-    global uart_mode
-    global next_mode
-    uart.write("stop")
-    uart_mode = MODE_STOP_REPORTING
-    next_mode = MODE_READ_CONFIGURATION
-    xyt01_config.clear()
-    while uart_mode != MODE_START_REPORTING:
-        await asyncio.sleep(1)
-    return dict(xyt01_config)
+class NotificationList(object):
+    def __init__(self):
+        self._shared_task = None
+        self.subscribers = 0
+
+    async def get_result(self, coroutine):
+        self.subscribers += 1
+        if self._shared_task is None:
+            self._shared_task = asyncio.create_task(coroutine)
+        result = await self._shared_task
+        return result
+
+    def reset(self):
+        self._shared_task = None
+        self.subscribers = 0
 
 
-async def read_from_uart(uart):
-    global uart_mode
-    while True:
-        if uart_mode == MODE_START_REPORTING:
-            await asyncio.create_task(read_temperature_report_from_uart(uart))
-        elif uart_mode == MODE_STOP_REPORTING:
-            await asyncio.create_task(read_until_down_code_from_uart(uart))
-            if next_mode:
-                uart_mode = next_mode
+class Xyt01SerialInterface(object):
+
+    def __init__(self, debug=False):
+        self.debug = debug
+        self.uart = UART(2, baudrate=9600, tx=Pin(4), rx=Pin(5))
+        self.temp_c = None
+        self.poll_task = None
+        self.down_task = None
+        self.stream_task = None
+        self.request_queue = []
+        self.read_notification_list = NotificationList()
+        self.set_temp_notification_list = NotificationList()
+        self.read_result_ready_event = asyncio.Event()
+        self.read_result = None
+        self.set_temp_complete_event = asyncio.Event()
+        self.config_lines = None
+        self.do_poll = False
+        self.read_report = False
+        self.machine = FSM(debug=debug)
+        self.machine.trigger("initialize_reporting", self)
+
+    @classmethod
+    async def create(cls, debug=False):
+        instance = cls(debug=debug)
+        return instance
+
+    async def poll_for_requests(self):
+        request_queue = self.request_queue
+        while self.do_poll:
+            requests_exist = not (len(request_queue) == 0)
+            if requests_exist and self.machine.state == "STREAMING":
+                self.read_result_ready_event.clear()
+                self.set_temp_complete_event.clear()
+                self.machine.trigger("request_detected", self)
             else:
-                uart_mode = MODE_UNINITIALIZED
-        elif uart_mode == MODE_READ_CONFIGURATION:
-            await asyncio.sleep(1)
-            await asyncio.create_task(read_configuration_from_uart(uart))
-            uart_mode = MODE_START_REPORTING
+                await asyncio.sleep(1)
+        if self.debug:
+            print("poll_for_requests() task has exited.")
+
+    async def read_down_code(self):
+        await asyncio.sleep_ms(10)
+        lines = await self.uart_read_until_match("DOWN")
+        if self.machine.state == "READING_CFG":
+            self.config_lines = lines
+        self.machine.trigger("receive_down", self)
+
+    async def read_from_report(self):
+        await asyncio.sleep_ms(100)
+        if self.debug:
+            print("Starting task to read streaming temperature data from UART ...")
+        uart = self.uart
+        chunks = []
+        lines = []
+        no_data_count = 0
+        while self.read_report:
+            if uart.any():
+                no_data_count = 0
+                chunk = uart.read()
+                if chunk:
+                    if self.debug:
+                        print(f"read_from_report() - UART received: {chunk}")
+                    chunks.append(chunk)
+                    if b"\r\n" in chunk:
+                        combined = b"".join(chunks)
+                        chunks.clear()
+                        pos = combined.rfind(b"\r\n") + 2
+                        completed = combined[:pos]
+                        chunks.extend(chunks[pos:])
+                        text = clean_bytes(completed).decode("utf-8")
+                        lines = text.split("\r\n")
+                        temp_c, _ = self.parse_report_line(lines[-2])
+                        if temp_c is not None:
+                            self.temp_c = temp_c
+            else:
+                no_data_count += 1
+                if no_data_count >= 7:
+                    uart.write("stop")
+                    await asyncio.sleep_ms(100)
+                    uart.write("start")
+                    await asyncio.sleep_ms(100)
+                    no_data_count = 0
+            await asyncio.sleep_ms(500)
+        if self.debug:
+            print("read_from_report() task has exited.")
+
+    def parse_report_line(self, line):
+        """
+        Parse a report line.
+        Returns celcius, relay_state.
+        """
+        parts = line.split(",")
+        if len(parts) != 2:
+            return None, None
+        try:
+            celsius = float(parts[0][:-1])
+        except ValueError:
+            if self.debug:
+                print(f"Could not parse: {line}")
+            return None, None
+        if parts[1] == "OP":
+            relay_state = "CLOSED"
         else:
-            await asyncio.sleep_ms(10)
+            relay_state = "OPEN"
+        return celsius, relay_state
 
+    async def uart_read_until_match(self, match):
+        uart = self.uart
+        chunks = []
+        lines = []
+        while True:
+            if uart.any():
+                chunk = uart.read()
+                if chunk:
+                    if self.debug:
+                        print(f"uart_read_until_match() - UART received: {chunk}")
+                    chunks.append(chunk)
+                    if b"\r\n" in chunk:
+                        combined = b"".join(chunks)
+                        chunks.clear()
+                        pos = combined.rfind(b"\r\n") + 2
+                        completed = combined[:pos]
+                        chunks.extend(chunks[pos:])
+                        text = clean_bytes(completed).decode("utf-8")
+                        lines.extend(text.split("\r\n"))
+                        last_line = lines[-2]
+                        if last_line == match:
+                            break
+            await asyncio.sleep_ms(500)
+        return lines
 
-async def read_configuration_from_uart(uart):
-    uart.write("read")
-    chunks = []
-    while uart_mode == MODE_READ_CONFIGURATION:
-        if uart.any():
-            chunk = uart.read()
-            if chunk:
-                if debug:
-                    print(f"UART received: {chunk}")
-                chunks.append(chunk)
-                if b"\r\n" in chunk:
-                    combined = b"".join(chunks)
-                    lines = combined.split(b"\r\n")
-                    # Change weird celsius symbol encoding to UTF-8.
-                    last_line = (
-                        lines[-2].replace(b"\xa1\xe6", b"\xe2\x84\x83").decode("utf-8")
-                    )
-                    if last_line == "DOWN":
-                        break
-        await asyncio.sleep(1)
-    bstring = b"".join(chunks)
-    text = bstring.replace(b"\xa1\xe6", b"\xe2\x84\x83").decode("utf-8")
-    lines = text.split("\r\n")
-    xyt01_config.clear()
-    if len(lines) != 4:
-        return
-    fields = lines[0].split(",")
-    xyt01_config["mode"] = fields[0]
-    xyt01_config["target_temperature"] = fields[1]
-    xyt01_config["hysteresis_temperature"] = fields[2]
-    fields = lines[1].split(",")
-    xyt01_config["alarm_temperature"] = fields[0].split(":")[1]
-    xyt01_config["delay_starting_time"] = fields[1].split(":")[1]
-    xyt01_config["temperature_correction"] = fields[2].split(":")[1]
+    def is_read_request(self):
+        queue = self.request_queue
+        if len(queue) > 0:
+            req_type, data = queue[0]
+            if req_type == REQ_READ_CFG:
+                return True
+        return False
 
+    def is_temp_request(self):
+        queue = self.request_queue
+        if len(queue) > 0:
+            req_type, data = queue[0]
+            if req_type == REQ_SET_TEMP:
+                return True
+        return False
 
-async def read_until_down_code_from_uart(uart):
-    uart.write("stop")
-    await asyncio.sleep(1)
-    chunks = []
-    while uart_mode == MODE_STOP_REPORTING:
-        if uart.any():
-            chunk = uart.read()
-            if chunk:
-                if debug:
-                    print(f"UART received: {chunk}")
-                chunks.append(chunk)
-                if b"\r\n" in chunk:
-                    combined = b"".join(chunks)
-                    chunks.clear()
-                    lines = combined.split(b"\r\n")
-                    # Change weird celsius symbol encoding to UTF-8.
-                    last_line = (
-                        lines[-2].replace(b"\xa1\xe6", b"\xe2\x84\x83").decode("utf-8")
-                    )
-                    if last_line == "DOWN":
-                        break
-                    last_chunk = lines[-1]
-                    if last_chunk != b"":
-                        chunks.append(last_chunk)
-        await asyncio.sleep_ms(10)
+    async def on_read_result_ready(self):
+        await self.read_result_ready_event.wait()
+        if self.debug:
+            print("Returning 'read' result ...")
+        return self.read_result
 
+    async def on_set_temp_complete(self):
+        if self.debug:
+            print("Returning from temperature set request.")
+        await self.set_temp_complete_event.wait()
 
-async def read_temperature_report_from_uart(uart):
-    uart.write("start")
-    await asyncio.sleep(1)
-    global last_report_line
-    chunks = []
-    while uart_mode == MODE_START_REPORTING:
-        if uart.any():
-            chunk = uart.read()
-            if chunk:
-                if debug:
-                    print(f"UART received: {chunk}")
-                chunks.append(chunk)
-                if b"\r\n" in chunk:
-                    combined = b"".join(chunks)
-                    chunks.clear()
-                    lines = combined.split(b"\r\n")
-                    # Change weird celsius symbol encoding to UTF-8.
-                    last_report_line = (
-                        lines[-2].replace(b"\xa1\xe6", b"\xe2\x84\x83").decode("utf-8")
-                    )
-                    last_chunk = lines[-1]
-                    if last_chunk != b"":
-                        chunks.append(last_chunk)
-        await asyncio.sleep_ms(10)
+    def on_enter_streaming(self):
+        if self.debug:
+            print("Entered STREAMING state.")
+        self.do_poll = True
+        self.poll_task = asyncio.create_task(self.poll_for_requests())
+        self.uart.write("start")
+        if self.debug:
+            print("Wrote 'start' to UART.")
+        self.read_report = True
+        self.streaming_task = asyncio.create_task(self.read_from_report())
 
+    def on_enter_stopping(self):
+        if self.debug:
+            print("Entered STOPPING state.")
+        self.do_poll = False
+        self.read_report = False
+        self.uart.write("stop")
+        if self.debug:
+            print("Wrote 'stop' to UART.")
+        asyncio.create_task(self.read_down_code())
 
-def get_temperature():
-    """
-    Get the last reported temperature.
-    """
-    if uart_mode != MODE_START_REPORTING:
-        print("Must start temperature report before reading temperature!")
-        return None, None
-    celsius = None
-    farenheit = None
-    celsius, relay_state = parse_report_line()
-    if celsius is None:
-        return None, None
-    farenheit = celsius * (9 / 5) + 32
-    if debug:
-        print(f"Temperature: {celsius:.1f} C, {farenheit:.1f} F")
-        print(f"Relay state: {relay_state}")
-        print("--------------------")
-    return celsius, farenheit
+    def on_enter_reading_cfg(self):
+        self.uart.write("read")
+        if self.debug:
+            print("Wrote 'read' to UART.")
+        self.down_task = asyncio.create_task(self.read_down_code())
 
+    def on_enter_setting_temp(self):
+        queue = self.request_queue
+        req, temp_c = queue[0]
+        itemp_c = int(temp_c)
+        if itemp_c >= -50 and itemp_c <= -1:
+            stemp_c = f"{itemp_c:03d}"
+        elif itemp_c >= 0 and itemp_c < 100:
+            stemp_c = f"{temp_c:04.1}"
+        elif itemp_c >= 100 and itemp_c <= 110:
+            stemp_c = f"{itemp_c}:3d"
+        else:
+            raise ValueError(f"'{temp_c}' is an invalid temperature setting.")
+        self.uart.write(f"S:{stemp_c}")
+        self.down_task = asyncio.create_task(self.read_down_code())
 
-def parse_report_line():
-    """
-    Parse a report line.
-    Returns celcius, relay_state.
-    """
-    parts = last_report_line.split(",")
-    if len(parts) != 2:
-        return None, None
-    try:
-        celsius = float(parts[0][:-1])
-    except ValueError:
-        if debug:
-            print(f"Could not parse: {last_report_line}")
-        return None, None
-    if parts[1] == "OP":
-        relay_state = "CLOSED"
-    else:
-        relay_state = "OPEN"
-    return celsius, relay_state
+    def on_enter_notifying(self):
+        queue = self.request_queue
+        if self.debug:
+            print("Request queue:", queue)
+        if self.is_read_request():
+            if self.debug:
+                print("Clearing out read requests from queue.")
+            keep = [req for req in queue if req[0] != REQ_READ_CFG]
+            queue.clear()
+            queue.extend(keep)
+            self.read_result = self.parse_read_result_lines()
+            self.read_result_ready_event.set()
+        elif self.is_temp_request():
+            if self.debug:
+                print("Clearing out last set-temperature request.")
+            keep = queue[1:]
+            queue.clear()
+            queue.extend(keep)
+            self.set_temp_complete_event.set()
+        if self.debug:
+            print("Request queue:", queue)
+        self.machine.trigger("dispatch_result", self)
+
+    def parse_read_result_lines(self):
+        lines = self.config_lines
+        config = {}
+        fields = lines[0].split(",")
+        config["mode"] = fields[0]
+        config["target_temperature"] = fields[1]
+        config["hysteresis_temperature"] = fields[2]
+        fields = lines[1].split(",")
+        config["alarm_temperature"] = fields[0].split(":")[1]
+        config["delay_starting_time"] = fields[1].split(":")[1]
+        config["temperature_correction"] = fields[2].split(":")[1]
+        return config
+
+    def get_temperature(self):
+        celsius = self.temp_c
+        if celsius is None:
+            return None, None
+        farenheit = celsius * (9 / 5) + 32
+        if self.debug:
+            print(f"Temperature: {celsius:.1f} C, {farenheit:.1f} F")
+            print("--------------------")
+        return celsius, farenheit
+
+    async def request_settings(self):
+        self.request_queue.append((REQ_READ_CFG, None))
+        result = await self.read_notification_list.get_result(
+            self.on_read_result_ready()
+        )
+        return result
+
+    async def set_target_temperature(self, temp_c):
+        self.request_queue.append((REQ_SET_TEMP, temp_c))
+        await self.set_temp_notification_list.get_result(self.on_set_temp_complete())
