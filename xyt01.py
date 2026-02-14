@@ -73,7 +73,10 @@ class NotificationList(object):
         self.subscribers += 1
         if self._shared_task is None:
             self._shared_task = asyncio.create_task(coroutine)
-        result = await self._shared_task
+        shared_task = self._shared_task
+        result = await shared_task
+        if shared_task is self._shared_task:
+            self.reset()
         return result
 
     def reset(self):
@@ -156,7 +159,11 @@ class Xyt01SerialInterface(object):
                             self.temp_c = temp_c
             else:
                 no_data_count += 1
-                if no_data_count >= 7:
+                if no_data_count >= 10:
+                    if self.debug:
+                        print(
+                            "No data for 5 seconds.  Attempting to restart report ..."
+                        )
                     uart.write("stop")
                     await asyncio.sleep_ms(100)
                     uart.write("start")
@@ -241,6 +248,8 @@ class Xyt01SerialInterface(object):
     def on_enter_streaming(self):
         if self.debug:
             print("Entered STREAMING state.")
+        self.read_result_ready_event.clear()
+        self.set_temp_complete_event.clear()
         self.do_poll = True
         self.poll_task = asyncio.create_task(self.poll_for_requests())
         self.uart.write("start")
