@@ -5,6 +5,7 @@ import json
 import sys
 from time import sleep
 
+import machine
 import network
 from microdot import Microdot, redirect
 from utemplate import source
@@ -161,6 +162,11 @@ async def set_temperature(request):
             200,
             {"Content-Type": "text/html; charset=utf-8"},
         )
+
+
+@app.route("/reboot", methods=["POST"])
+async def reboot(request):
+    machine.reset()
 
 
 # Scheduled tasks
