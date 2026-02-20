@@ -5,6 +5,9 @@ from machine import UART, Pin
 REQ_READ_CFG = "READ_CFG"
 REQ_SET_TEMP = "SET_TEMP"
 
+RELAY_OPEN = "Off"
+RELAY_CLOSED = "Heating"
+
 
 class InvalidTransitionError(Exception):
     pass
@@ -90,6 +93,7 @@ class Xyt01SerialInterface(object):
         self.debug = debug
         self.uart = UART(2, baudrate=9600, tx=Pin(4), rx=Pin(5))
         self.temp_c = None
+        self.relay_state = RELAY_OPEN
         self.poll_task = None
         self.down_task = None
         self.stream_task = None
@@ -159,6 +163,7 @@ class Xyt01SerialInterface(object):
                             print(f"Parsed temperature: {temp_c}, relay_state: {relay_state}")
                         if temp_c is not None:
                             self.temp_c = temp_c
+                            self.relay_state = relay_state
             else:
                 no_data_count += 1
                 if no_data_count >= 10:
@@ -190,9 +195,9 @@ class Xyt01SerialInterface(object):
                 print(f"Could not parse: {line}")
             return None, None
         if parts[1] == "OP":
-            relay_state = "CLOSED"
+            relay_state = RELAY_CLOSED
         else:
-            relay_state = "OPEN"
+            relay_state = RELAY_OPEN
         return celsius, relay_state
 
     async def uart_read_until_match(self, match):
@@ -336,10 +341,12 @@ class Xyt01SerialInterface(object):
         if celsius is None:
             return None, None
         farenheit = celsius * (9 / 5) + 32
+        relay_state = self.relay_state
         if self.debug:
             print(f"Temperature: {celsius:.1f} C, {farenheit:.1f} F")
+            print(f"Status: {relay_state}")
             print("--------------------")
-        return celsius, farenheit
+        return celsius, farenheit, relay_state
 
     async def request_settings(self):
         self.request_queue.append((REQ_READ_CFG, None))

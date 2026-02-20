@@ -2,14 +2,19 @@
 
 import asyncio
 import json
+import sys
 from time import sleep
 
 import network
-from microdot import Microdot
+from microdot import Microdot, redirect
+from utemplate import source
 
 from wificonfig import passwd as wifi_passwd
 from wificonfig import ssid
 from xyt01 import Xyt01SerialInterface
+
+target_temperature = 30.0
+
 
 # network configuration
 new_hostname = "thermostat01"
@@ -37,23 +42,52 @@ uart = None
 
 # Web server
 app = Microdot()
+loader = source.Loader("__main__", "templates")
 
 
 # Routes
 @app.route("/")
 async def index(request):
-    temp_c, temp_f = uart.get_temperature()
+    global target_temperature
+    temp_c, temp_f, relay_state = uart.get_temperature()
     if temp_c is None:
         return "Could not determine temperature."
+    render = loader.load("index.tpl")
+    stemp_c = f"{temp_c:.1f}"
+    stemp_f = f"{temp_f:.1f}"
+    submit = request.args.get("submit")
+    reset = request.args.get("reset")
+    if reset is not None:
+        target_c = float(target_temperature)
+    else:
+        target_c = float(request.args.get("target_temperature", target_temperature))
+    adj = request.args.get("adj")
+    if adj == "up":
+        target_c += 1.0
+        target_c = round(target_c)
+    elif adj == "down":
+        target_c -= 1.0
+        target_c = round(target_c)
+    starget_c = f"{target_c:.1f}"
+    starget_f = f"{target_c * (9/5) + 32:.1f}"
+    if submit is not None:
+        await uart.set_target_temperature(target_c)
+        target_temperature = target_c
+        await asyncio.sleep(1)
+        return redirect(request.path)
+    html = render(stemp_c, stemp_f, relay_state, starget_c, starget_f)
     return (
-        (
-            "<html><head><meta http-equiv='refresh' content='60'></head><body>"
-            "<h1 style='font-size: 48px;'>"
-            f"Temperature {temp_c:.1f} ℃ ({temp_f:.1f} ℉) </h1></body>"
-        ),
+        html,
         200,
         {"Content-Type": "text/html; charset=utf-8"},
     )
+
+
+@app.route("/style.css")
+async def style(request):
+    with open("/www/style.css", "r") as f:
+        css = f.read()
+    return (css, 200, {"Content-Type": "text/css; charset=utf-8"})
 
 
 @app.route("/settings")
@@ -61,31 +95,18 @@ async def settings(request):
     print("REQUESTING CONFIG")
     config = await uart.request_settings()
     print(f"CONFIG: {json.dumps(config)}")
+    render = loader.load("settings.tpl")
+    firmware = sys.version
+    rssi = nic.status("rssi")
+    hysteresis = config["hysteresis_temperature"]
+    alarm_temperature = config["alarm_temperature"]
+    delay = config["delay_starting_time"]
+    correction = config["temperature_correction"]
+    html = render(
+        firmware, rssi, ip_addr, hysteresis, alarm_temperature, delay, correction
+    )
     return (
-        (
-            "<html>"
-            "<head></head>"
-            "<body>"
-            "<table style='font-size: 48px; text-align: right;'>"
-            "<thead><td>Setting</td><td>Value</td></thead>"
-            "<tbody>"
-            "<tr><td>Mode</td>"
-            f"<td>{config['mode']}</td></tr>"
-            "<tr><td>Target Temperature</td>"
-            f"<td>{config['target_temperature']}</td></tr>"
-            "<tr><td>Hysteresis Temperature</td>"
-            f"<td>{config['hysteresis_temperature']}</td></tr>"
-            "<tr><td>Alarm Temperature</td>"
-            f"<td>{config['alarm_temperature']}</td></tr>"
-            "<tr><td>Delay Starting Time</td>"
-            f"<td>{config['delay_starting_time']}</td></tr>"
-            "<tr><td>Temperature Correction</td>"
-            f"<td>{config['temperature_correction']}</td></tr>"
-            "</tbody>"
-            "</table>"
-            "</body>"
-            "</html>"
-        ),
+        html,
         200,
         {"Content-Type": "text/html; charset=utf-8"},
     )
@@ -142,6 +163,17 @@ async def set_temperature(request):
         )
 
 
+# Scheduled tasks
+
+
+async def get_current_target_temperature():
+    global target_temperature
+    while True:
+        config = await uart.request_settings()
+        target_temperature = config["target_temperature"]
+        await asyncio.sleep(120)
+
+
 async def main():
     """
     Start the web server in asyncio mode.
@@ -149,6 +181,7 @@ async def main():
     global uart
     debug = True
     uart = await Xyt01SerialInterface.create(debug=debug)
+    asyncio.create_task(get_current_target_temperature())
     await app.start_server(port=80, debug=True)
 
 
