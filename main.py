@@ -166,7 +166,7 @@ async def set_temperature(request):
         )
 
 
-@app.route("/reboot", methods=["POST"])
+@app.route("/reboot", methods=["GET"])
 async def reboot(request):
     machine.reset()
 
