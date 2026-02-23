@@ -54,7 +54,7 @@
         </table>
         
         <div style="margin-top: 20px;">
-            <form action="/reboot" method="POST">
+            <form action="/reboot" method="GET">
                 <button class="btn btn-danger">Reboot Device</button>
             </form>
         </div>

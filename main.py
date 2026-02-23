@@ -106,7 +106,14 @@ async def settings(request):
     correction = config["temperature_correction"]
     uptime = utime.ticks_ms() // 1000
     html = render(
-        firmware, uptime, rssi, ip_addr, hysteresis, alarm_temperature, delay, correction
+        firmware,
+        uptime,
+        rssi,
+        ip_addr,
+        hysteresis,
+        alarm_temperature,
+        delay,
+        correction,
     )
     return (
         html,
@@ -168,7 +175,8 @@ async def set_temperature(request):
 
 @app.route("/reboot", methods=["GET"])
 async def reboot(request):
-    machine.reset()
+    asyncio.create_task(one_time_reboot())
+    return redirect("/")
 
 
 @app.route("/debug")
@@ -191,6 +199,12 @@ async def get_current_target_temperature():
         await asyncio.sleep(120)
 
 
+async def one_time_reboot():
+    await asyncio.sleep(10)
+    print("Rebooting ...")
+    machine.reset()
+
+
 async def periodic_reboot():
     await asyncio.sleep(3600)
     print("Rebooting ...")
@@ -205,7 +219,7 @@ async def main():
     debug = True
     uart = await Xyt01SerialInterface.create(debug=debug)
     asyncio.create_task(get_current_target_temperature())
-    asyncio.create_task(periodic_reboot())
+    # asyncio.create_task(periodic_reboot())
     await app.start_server(port=80, debug=True)
 
 

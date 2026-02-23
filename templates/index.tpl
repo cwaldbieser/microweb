@@ -39,6 +39,12 @@
         <div class="status-bar">
             <span>Status: <strong class="heating">{{status}}</strong></span>
         </div>
+
+        <div style="margin-top: 20px;">
+            <form action="/reboot" method="GET">
+                <button class="btn btn-danger">Reboot Device</button>
+            </form>
+        </div>
     </div>
 </body>
 </html>
