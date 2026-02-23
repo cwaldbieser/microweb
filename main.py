@@ -7,6 +7,7 @@ from time import sleep
 
 import machine
 import network
+import utime
 from microdot import Microdot, redirect
 from utemplate import source
 
@@ -103,8 +104,9 @@ async def settings(request):
     alarm_temperature = config["alarm_temperature"]
     delay = config["delay_starting_time"]
     correction = config["temperature_correction"]
+    uptime = utime.ticks_ms() // 1000
     html = render(
-        firmware, rssi, ip_addr, hysteresis, alarm_temperature, delay, correction
+        firmware, uptime, rssi, ip_addr, hysteresis, alarm_temperature, delay, correction
     )
     return (
         html,
@@ -169,6 +171,15 @@ async def reboot(request):
     machine.reset()
 
 
+@app.route("/debug")
+async def debug(request):
+    uart_command = request.args.get("uart")
+    if uart_command is not None:
+        uart.uart.write(uart_command)
+    print(f"Wrote '{uart_command}' to UART.")
+    return redirect("/")
+
+
 # Scheduled tasks
 
 
@@ -180,6 +191,12 @@ async def get_current_target_temperature():
         await asyncio.sleep(120)
 
 
+async def periodic_reboot():
+    await asyncio.sleep(3600)
+    print("Rebooting ...")
+    machine.reset()
+
+
 async def main():
     """
     Start the web server in asyncio mode.
@@ -188,6 +205,7 @@ async def main():
     debug = True
     uart = await Xyt01SerialInterface.create(debug=debug)
     asyncio.create_task(get_current_target_temperature())
+    asyncio.create_task(periodic_reboot())
     await app.start_server(port=80, debug=True)
 
 

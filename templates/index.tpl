@@ -31,7 +31,7 @@
                 </div>
                 <div class="temp-controls">
                     <button type="submit" name="submit" value="submit" class="btn" style="width:50%;margin-right:2px;">Set</button>
-                    <button name="reset" value="reset" class="btn" style="width:50%;margin-left:2px;">Reset</button>
+                    <button name="reset" value="reset" class="btn" style="width:70%;margin-left:2px;">Refresh</button>
                 </div>
             </form>
         </div>

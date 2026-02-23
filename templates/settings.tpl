@@ -1,4 +1,4 @@
-{% args firmware, rssi, ip_addr, hysteresis, alarm_temperature, delay, correction %}
+{% args firmware, uptime, rssi, ip_addr, hysteresis, alarm_temperature, delay, correction %}
 <!DOCTYPE html>
 <html>
 <head>
@@ -22,6 +22,10 @@
             <tr>
                 <td>Firmware</td>
                 <td>{{firmware}}</td>
+            </tr>
+            <tr>
+                <td>Uptime seconds</td>
+                <td>{{uptime}}</td>
             </tr>
             <tr>
                 <td>WiFi Strength</td>

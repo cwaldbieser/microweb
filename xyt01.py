@@ -160,7 +160,9 @@ class Xyt01SerialInterface(object):
                         lines = text.split("\r\n")
                         temp_c, relay_state = self.parse_report_line(lines[-2])
                         if self.debug:
-                            print(f"Parsed temperature: {temp_c}, relay_state: {relay_state}")
+                            print(
+                                f"Parsed temperature: {temp_c}, relay_state: {relay_state}"
+                            )
                         if temp_c is not None:
                             self.temp_c = temp_c
                             self.relay_state = relay_state
@@ -217,7 +219,13 @@ class Xyt01SerialInterface(object):
                         pos = combined.rfind(b"\r\n") + 2
                         completed = combined[:pos]
                         chunks.extend(chunks[pos:])
-                        text = clean_bytes(completed).decode("utf-8")
+                        cleaned = clean_bytes(completed)
+                        # cleaned.replace(b"\x11", b",")
+                        # cleaned.replace(b"\xff", b",")
+                        text = cleaned.decode(
+                            "utf-8", "replace"
+                        )
+                        text = text.replace("\ufffd", ",")
                         lines.extend(text.split("\r\n"))
                         last_line = lines[-2]
                         if last_line == match:
