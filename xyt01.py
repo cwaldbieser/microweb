@@ -1,5 +1,6 @@
 import asyncio
 
+import machine
 from machine import UART, Pin
 
 REQ_READ_CFG = "READ_CFG"
@@ -7,6 +8,8 @@ REQ_SET_TEMP = "SET_TEMP"
 
 RELAY_OPEN = "Off"
 RELAY_CLOSED = "Heating"
+
+VALID_CHARSET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ,.:\n\r"
 
 
 class InvalidTransitionError(Exception):
@@ -65,6 +68,22 @@ class FSM(object):
 
 def clean_bytes(bstring):
     return bstring.replace(b"\xa1\xe6", b"\xe2\x84\x83")
+
+
+def clean_text(text):
+    """
+    Sometimes the UART returns some weird bytes instead of a comma.
+    If the bytes are decodable as UTF-8, this can cause a parsing issue.
+    Since the set of valid characters is limited, we can correct weird characters.
+    """
+    chars = []
+    for c in text:
+        if c in VALID_CHARSET:
+            chars.append(c)
+        else:
+            chars.append(",")
+    new_text = "".join(chars)
+    return new_text
 
 
 class NotificationList(object):
@@ -222,10 +241,14 @@ class Xyt01SerialInterface(object):
                         cleaned = clean_bytes(completed)
                         # cleaned.replace(b"\x11", b",")
                         # cleaned.replace(b"\xff", b",")
-                        text = cleaned.decode(
-                            "utf-8", "replace"
-                        )
+                        try:
+                            text = cleaned.decode("utf-8", "replace")
+                        except UnicodeError:
+                            print(f"Failed to decode bytes: ->{cleaned}<-")
+                            print("Resetting microcontrolled to enter a valid state.")
+                            machine.reset()
                         text = text.replace("\ufffd", ",")
+                        text = clean_text(text)
                         lines.extend(text.split("\r\n"))
                         last_line = lines[-2]
                         if last_line == match:
@@ -334,7 +357,19 @@ class Xyt01SerialInterface(object):
     def parse_read_result_lines(self):
         lines = self.config_lines
         config = {}
-        fields = lines[0].split(",")
+        line = lines[0]
+        line = line.replace("\n", ",")
+        line = line.replace("\r", ",")
+        fields = line.split(",")
+        if len(fields) != 3:
+            return {
+                "mode": "???",
+                "target_temperature": "???",
+                "hysteresis_temperature": "???",
+                "alarm_temperature": "???",
+                "delay_starting_time": "???",
+                "temperature_correction": "???",
+            }
         config["mode"] = fields[0]
         config["target_temperature"] = fields[1]
         config["hysteresis_temperature"] = fields[2]
