@@ -176,6 +176,13 @@ async def set_temperature(request):
 @app.route("/reboot", methods=["GET"])
 async def reboot(request):
     asyncio.create_task(one_time_reboot())
+    print(f"UART config lines: {uart.config_lines}")
+    return redirect("/")
+
+
+@app.route("/reset-xyt01", methods=["GET"])
+async def reset_xyt01(request):
+    await uart.reset_xyt01()
     return redirect("/")
 
 

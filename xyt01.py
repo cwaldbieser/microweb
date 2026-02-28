@@ -111,6 +111,8 @@ class Xyt01SerialInterface(object):
     def __init__(self, debug=False):
         self.debug = debug
         self.uart = UART(2, baudrate=9600, tx=Pin(4), rx=Pin(5))
+        self.xyt01_power_select_pin = Pin(7, Pin.OUT)
+        self.xyt01_power_select_pin.value(1)
         self.temp_c = None
         self.relay_state = RELAY_OPEN
         self.poll_task = None
@@ -132,6 +134,13 @@ class Xyt01SerialInterface(object):
     async def create(cls, debug=False):
         instance = cls(debug=debug)
         return instance
+
+    async def reset_xyt01(self):
+        print("Cutting power to xyt01 ...")
+        self.xyt01_power_select_pin.value(0)
+        await asyncio.sleep(2)
+        print("Restoring power to xyt01 ...")
+        self.xyt01_power_select_pin.value(1)
 
     async def poll_for_requests(self):
         request_queue = self.request_queue
@@ -361,22 +370,29 @@ class Xyt01SerialInterface(object):
         line = line.replace("\n", ",")
         line = line.replace("\r", ",")
         fields = line.split(",")
+        malformed_result = {
+            "mode": "???",
+            "target_temperature": "???",
+            "hysteresis_temperature": "???",
+            "alarm_temperature": "???",
+            "delay_starting_time": "???",
+            "temperature_correction": "???",
+        }
         if len(fields) != 3:
-            return {
-                "mode": "???",
-                "target_temperature": "???",
-                "hysteresis_temperature": "???",
-                "alarm_temperature": "???",
-                "delay_starting_time": "???",
-                "temperature_correction": "???",
-            }
-        config["mode"] = fields[0]
-        config["target_temperature"] = fields[1]
-        config["hysteresis_temperature"] = fields[2]
-        fields = lines[1].split(",")
-        config["alarm_temperature"] = fields[0].split(":")[1]
-        config["delay_starting_time"] = fields[1].split(":")[1]
-        config["temperature_correction"] = fields[2].split(":")[1]
+            print(f"Malformed line received from UART: {line}")
+            return malformed_result
+        try:
+            config["mode"] = fields[0]
+            config["target_temperature"] = fields[1]
+            config["hysteresis_temperature"] = fields[2]
+            fields = lines[1].split(",")
+            config["alarm_temperature"] = fields[0].split(":")[1]
+            config["delay_starting_time"] = fields[1].split(":")[1]
+            config["temperature_correction"] = fields[2].split(":")[1]
+        except IndexError:
+            print("MALFORMED RESULT")
+            print(f"line: {line}")
+            return malformed_result
         return config
 
     def get_temperature(self):
