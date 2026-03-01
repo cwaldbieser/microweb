@@ -28,8 +28,14 @@ class FSM(object):
                 "is_read_request": "READING_CFG",
                 "is_temp_request": "SETTING_TEMP",
             },
+            ("STOPPING", "timeout"): "RESTART_STOPPING",
+            ("RESTART_STOPPING", "restarted_xyt01"): "STOPPING",
             ("READING_CFG", "receive_down"): "NOTIFYING",
+            ("READING_CFG", "timeout"): "RESTART_READING_CFG",
+            ("RESTART_READING_CFG", "restarted_xyt01"): "READING_CFG",
             ("SETTING_TEMP", "receive_down"): "NOTIFYING",
+            ("SETTING_TEMP", "timeout"): "RESTART_SETTING_TEMP",
+            ("RESTART_SETTING_TEMP", "restarted_xyt01"): "SETTING_TEMP",
             ("NOTIFYING", "dispatch_result"): "STREAMING",
         }
 
@@ -127,6 +133,7 @@ class Xyt01SerialInterface(object):
         self.config_lines = None
         self.do_poll = False
         self.read_report = False
+        self.timeout_task = None
         self.machine = FSM(debug=debug)
         self.machine.trigger("initialize_reporting", self)
 
@@ -155,11 +162,27 @@ class Xyt01SerialInterface(object):
         if self.debug:
             print("poll_for_requests() task has exited.")
 
+    async def start_timeout(self):
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            return
+        self.machine.trigger("timeout")
+
+    async def restart_state(self):
+        xyt01_power_pin = self.xyt01_power_select_pin
+        xyt01_power_pin.value(0)
+        await asyncio.sleep(2)
+        xyt01_power_pin.value(1)
+        self.machine.trigger("restarted_xyt01")
+
     async def read_down_code(self):
         await asyncio.sleep_ms(10)
         lines = await self.uart_read_until_match("DOWN")
         if self.machine.state == "READING_CFG":
             self.config_lines = lines
+        if self.timeout_task is not None:
+            self.timeout_task.cancel()
         self.machine.trigger("receive_down", self)
 
     async def read_from_report(self):
@@ -305,6 +328,11 @@ class Xyt01SerialInterface(object):
         self.read_report = True
         self.streaming_task = asyncio.create_task(self.read_from_report())
 
+    def on_enter_restart_stopping(self):
+        if self.debug:
+            print("Entered RESTART_STOPPING state.")
+        asyncio.create_task(self.restart_state())
+
     def on_enter_stopping(self):
         if self.debug:
             print("Entered STOPPING state.")
@@ -313,13 +341,25 @@ class Xyt01SerialInterface(object):
         self.uart.write("stop")
         if self.debug:
             print("Wrote 'stop' to UART.")
+        self.timeout_task = asyncio.create_task(self.start_timeout())
         asyncio.create_task(self.read_down_code())
+
+    def on_enter_restart_reading_cfg(self):
+        if self.debug:
+            print("Entered RESTART_READING_CFG state.")
+        asyncio.create_task(self.restart_state())
 
     def on_enter_reading_cfg(self):
         self.uart.write("read")
         if self.debug:
             print("Wrote 'read' to UART.")
+        self.timeout_task = asyncio.create_task(self.start_timeout())
         self.down_task = asyncio.create_task(self.read_down_code())
+
+    def on_enter_restart_setting_temp(self):
+        if self.debug:
+            print("Entered RESTART_SETTING_TEMP state.")
+        asyncio.create_task(self.restart_state())
 
     def on_enter_setting_temp(self):
         queue = self.request_queue
@@ -338,6 +378,7 @@ class Xyt01SerialInterface(object):
         self.uart.write(value)
         if self.debug:
             print(f"Wrote '{value}' to UART.")
+        self.timeout_task = asyncio.create_task(self.start_timeout())
         self.down_task = asyncio.create_task(self.read_down_code())
 
     def on_enter_notifying(self):
