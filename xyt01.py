@@ -167,14 +167,14 @@ class Xyt01SerialInterface(object):
             await asyncio.sleep(30)
         except asyncio.CancelledError:
             return
-        self.machine.trigger("timeout")
+        self.machine.trigger("timeout", self)
 
     async def restart_state(self):
         xyt01_power_pin = self.xyt01_power_select_pin
         xyt01_power_pin.value(0)
         await asyncio.sleep(2)
         xyt01_power_pin.value(1)
-        self.machine.trigger("restarted_xyt01")
+        self.machine.trigger("restarted_xyt01", self)
 
     async def read_down_code(self):
         await asyncio.sleep_ms(10)
