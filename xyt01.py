@@ -174,11 +174,17 @@ class Xyt01SerialInterface(object):
         xyt01_power_pin.value(0)
         await asyncio.sleep(2)
         xyt01_power_pin.value(1)
+        await asyncio.sleep(3)
         self.machine.trigger("restarted_xyt01", self)
 
     async def read_down_code(self):
         await asyncio.sleep_ms(10)
-        lines = await self.uart_read_until_match("DOWN")
+        try:
+            lines = await self.uart_read_until_match("DOWN")
+        except MemoryError:
+            print("Out of memory error!")
+            self.xyt01_power_select_pin.value(0)
+            machine.reset()
         if self.machine.state == "READING_CFG":
             self.config_lines = lines
         if self.timeout_task is not None:
