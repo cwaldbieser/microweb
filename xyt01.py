@@ -122,7 +122,8 @@ class Xyt01SerialInterface(object):
         self.temp_c = None
         self.relay_state = RELAY_OPEN
         self.poll_task = None
-        self.down_task = None
+        self.read_down_code_task = None
+        self.restart_state_task = None
         self.stream_task = None
         self.request_queue = []
         self.read_notification_list = NotificationList()
@@ -164,7 +165,7 @@ class Xyt01SerialInterface(object):
 
     async def start_timeout(self):
         try:
-            await asyncio.sleep(30)
+            await asyncio.sleep(10)
         except asyncio.CancelledError:
             return
         self.machine.trigger("timeout", self)
@@ -337,7 +338,7 @@ class Xyt01SerialInterface(object):
     def on_enter_restart_stopping(self):
         if self.debug:
             print("Entered RESTART_STOPPING state.")
-        asyncio.create_task(self.restart_state())
+        self.restart_state_task = asyncio.create_task(self.restart_state())
 
     def on_enter_stopping(self):
         if self.debug:
@@ -348,24 +349,24 @@ class Xyt01SerialInterface(object):
         if self.debug:
             print("Wrote 'stop' to UART.")
         self.timeout_task = asyncio.create_task(self.start_timeout())
-        asyncio.create_task(self.read_down_code())
+        self.read_down_code_task = asyncio.create_task(self.read_down_code())
 
     def on_enter_restart_reading_cfg(self):
         if self.debug:
             print("Entered RESTART_READING_CFG state.")
-        asyncio.create_task(self.restart_state())
+        self.restart_state_task = asyncio.create_task(self.restart_state())
 
     def on_enter_reading_cfg(self):
         self.uart.write("read")
         if self.debug:
             print("Wrote 'read' to UART.")
         self.timeout_task = asyncio.create_task(self.start_timeout())
-        self.down_task = asyncio.create_task(self.read_down_code())
+        self.read_down_code_task = asyncio.create_task(self.read_down_code())
 
     def on_enter_restart_setting_temp(self):
         if self.debug:
             print("Entered RESTART_SETTING_TEMP state.")
-        asyncio.create_task(self.restart_state())
+        self.restart_state_task = asyncio.create_task(self.restart_state())
 
     def on_enter_setting_temp(self):
         queue = self.request_queue
@@ -385,7 +386,7 @@ class Xyt01SerialInterface(object):
         if self.debug:
             print(f"Wrote '{value}' to UART.")
         self.timeout_task = asyncio.create_task(self.start_timeout())
-        self.down_task = asyncio.create_task(self.read_down_code())
+        self.read_down_code_task = asyncio.create_task(self.read_down_code())
 
     def on_enter_notifying(self):
         queue = self.request_queue

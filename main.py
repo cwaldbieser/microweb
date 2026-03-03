@@ -1,6 +1,7 @@
 #! /usr/bin/env python
 
 import asyncio
+import gc
 import json
 import sys
 from time import sleep
@@ -105,6 +106,8 @@ async def settings(request):
     delay = config["delay_starting_time"]
     correction = config["temperature_correction"]
     uptime = utime.ticks_ms() // 1000
+    free_memory = gc.mem_free()
+    allocated_memory = gc.mem_alloc()
     html = render(
         firmware,
         uptime,
@@ -114,6 +117,8 @@ async def settings(request):
         alarm_temperature,
         delay,
         correction,
+        free_memory,
+        allocated_memory,
     )
     return (
         html,
@@ -173,9 +178,13 @@ async def set_temperature(request):
         )
 
 
+one_time_reboot_task = None
+
+
 @app.route("/reboot", methods=["GET"])
 async def reboot(request):
-    asyncio.create_task(one_time_reboot())
+    global one_time_reboot_task
+    one_time_reboot_task = asyncio.create_task(one_time_reboot())
     print(f"UART config lines: {uart.config_lines}")
     return redirect("/")
 
@@ -214,8 +223,13 @@ async def one_time_reboot():
 
 async def periodic_reboot():
     await asyncio.sleep(3600)
-    print("Rebooting ...")
+    await uart.reset_xyt01()
+    print("Rebooting microcontroller ...")
     machine.reset()
+
+
+get_current_target_temperature_task = None
+periodic_reboot_task = None
 
 
 async def main():
@@ -223,10 +237,14 @@ async def main():
     Start the web server in asyncio mode.
     """
     global uart
+    global get_current_target_temperature_task
+    global periodic_reboot_task
     debug = True
     uart = await Xyt01SerialInterface.create(debug=debug)
-    asyncio.create_task(get_current_target_temperature())
-    # asyncio.create_task(periodic_reboot())
+    get_current_target_temperature_task = asyncio.create_task(
+        get_current_target_temperature()
+    )
+    periodic_reboot_task = asyncio.create_task(periodic_reboot())
     await app.start_server(port=80, debug=True)
 
 
