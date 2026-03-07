@@ -195,6 +195,10 @@ class Xyt01SerialInterface(object):
             await asyncio.sleep(10)
         except asyncio.CancelledError:
             return
+        rdc_task = self.read_down_code_task
+        if rdc_task is not None:
+            if not rdc_task.done():
+                rdc_task.cancel()
         self.machine.trigger("timeout", self)
 
     async def restart_state(self):
@@ -213,6 +217,8 @@ class Xyt01SerialInterface(object):
             print("Out of memory error!")
             self.xyt01_power_select_pin.value(0)
             machine.reset()
+        except asyncio.CancelledError:
+            return
         if self.machine.state == "READING_CFG":
             self.config_lines = lines
         if self.timeout_task is not None:
