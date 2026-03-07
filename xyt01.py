@@ -16,6 +16,33 @@ class InvalidTransitionError(Exception):
     pass
 
 
+def safe_decode(buf, replacement="?"):
+    result = []
+    i = 0
+    while i < len(buf):
+        try:
+            decoded = buf[i: i + 1].decode("utf-8")
+            result.append(decoded)
+            i += 1
+        except UnicodeError:
+            # Handle multi-byte encodings (2-4 bytes)
+            found = False
+            for length in range(2, 5):
+                try:
+                    decoded = buf[i: i + length].decode("utf-8")
+                    result.append(decoded)
+                    i += length
+                    found = True
+                    break
+                except (UnicodeError, IndexError):
+                    continue
+
+            if not found:
+                result.append(replacement)
+                i += 1
+    return "".join(result)
+
+
 class FSM(object):
 
     def __init__(self, debug=False):
@@ -278,14 +305,7 @@ class Xyt01SerialInterface(object):
                         completed = combined[:pos]
                         chunks.extend(chunks[pos:])
                         cleaned = clean_bytes(completed)
-                        # cleaned.replace(b"\x11", b",")
-                        # cleaned.replace(b"\xff", b",")
-                        try:
-                            text = cleaned.decode("utf-8", "replace")
-                        except UnicodeError:
-                            print(f"Failed to decode bytes: ->{cleaned}<-")
-                            print("Resetting microcontrolled to enter a valid state.")
-                            machine.reset()
+                        text = safe_decode(cleaned, ",")
                         text = text.replace("\ufffd", ",")
                         text = clean_text(text)
                         lines.extend(text.split("\r\n"))
