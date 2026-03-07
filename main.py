@@ -238,13 +238,13 @@ async def main():
     """
     global uart
     global get_current_target_temperature_task
-    global periodic_reboot_task
+    # global periodic_reboot_task
     debug = True
     uart = await Xyt01SerialInterface.create(debug=debug)
     get_current_target_temperature_task = asyncio.create_task(
         get_current_target_temperature()
     )
-    periodic_reboot_task = asyncio.create_task(periodic_reboot())
+    # periodic_reboot_task = asyncio.create_task(periodic_reboot())
     await app.start_server(port=80, debug=True)
 
 
