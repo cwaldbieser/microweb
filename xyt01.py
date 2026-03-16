@@ -445,12 +445,12 @@ class Xyt01SerialInterface(object):
         line = line.replace("\r", ",")
         fields = line.split(",")
         malformed_result = {
-            "mode": "???",
-            "target_temperature": "???",
-            "hysteresis_temperature": "???",
-            "alarm_temperature": "???",
-            "delay_starting_time": "???",
-            "temperature_correction": "???",
+            "mode": "H",
+            "target_temperature": "21.0",
+            "hysteresis_temperature": "02.0",
+            "alarm_temperature": "110.0",
+            "delay_starting_time": "0000",
+            "temperature_correction": "00.0",
         }
         if len(fields) != 3:
             print(f"Malformed line received from UART: {line}")
