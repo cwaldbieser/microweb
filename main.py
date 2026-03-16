@@ -60,17 +60,19 @@ async def index(request):
     stemp_f = f"{temp_f:.1f}"
     submit = request.args.get("submit")
     reset = request.args.get("reset")
-    if reset is not None:
-        target_c = float(target_temperature)
-    else:
-        target_c = float(request.args.get("target_temperature", target_temperature))
+    try:
+        if reset is not None:
+            target_c = float(target_temperature)
+        else:
+            target_c = float(request.args.get("target_temperature", target_temperature))
+    except ValueError:
+        target_c = 21.0
+    target_c = round(target_c * 20.0 / 10.0) / 2.0
     adj = request.args.get("adj")
     if adj == "up":
-        target_c += 1.0
-        target_c = round(target_c)
+        target_c += 0.5
     elif adj == "down":
-        target_c -= 1.0
-        target_c = round(target_c)
+        target_c -= 0.5
     starget_c = f"{target_c:.1f}"
     starget_f = f"{target_c * (9/5) + 32:.1f}"
     if submit is not None:
