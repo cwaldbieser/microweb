@@ -12,6 +12,7 @@ import utime
 from microdot import Microdot, redirect
 from utemplate import source
 
+from wificonfig import hostname
 from wificonfig import passwd as wifi_passwd
 from wificonfig import ssid
 from xyt01 import Xyt01SerialInterface
@@ -20,11 +21,10 @@ target_temperature = 30.0
 
 
 # network configuration
-new_hostname = "thermostat01"
 nic = network.WLAN(network.STA_IF)
 nic.active(True)
 try:
-    nic.config(hostname=new_hostname, pm=network.WLAN.PM_NONE)
+    nic.config(hostname=hostname, pm=network.WLAN.PM_NONE)
 except TypeError:
     print(
         "Setting hostname via config() not supported on this port."
@@ -38,7 +38,7 @@ while not nic.isconnected():
     sleep(1)
 ip_addr = nic.ifconfig()[0]
 print("Connected! IP address:", ip_addr)
-print(f"Device should be reachable at http://{new_hostname}.local")
+print(f"Device should be reachable at http://{hostname}.local")
 
 # XT01 serial interface
 uart = None
@@ -230,8 +230,20 @@ async def periodic_reboot():
     machine.reset()
 
 
+async def monitor_wifi():
+    # Should help with errors like:
+    # OSError: [Errno 113] ECONNABORTED
+    while True:
+        if not nic.isconnected():
+            await asyncio.sleep(30)
+            if not nic.isconnected():
+                machine.reset()
+        await asyncio.sleep(30)
+
+
 get_current_target_temperature_task = None
 periodic_reboot_task = None
+monitor_wifi_task = None
 
 
 async def main():
@@ -240,14 +252,19 @@ async def main():
     """
     global uart
     global get_current_target_temperature_task
+    global monitor_wifi_task
     # global periodic_reboot_task
     debug = True
     uart = await Xyt01SerialInterface.create(debug=debug)
     get_current_target_temperature_task = asyncio.create_task(
         get_current_target_temperature()
     )
+    monitor_wifi_task = asyncio.create_task(monitor_wifi())
     # periodic_reboot_task = asyncio.create_task(periodic_reboot())
-    await app.start_server(port=80, debug=True)
+    try:
+        await app.start_server(port=80, debug=True)
+    except OSError:
+        machine.reset()
 
 
 asyncio.run(main())
