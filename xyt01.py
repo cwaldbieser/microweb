@@ -143,7 +143,8 @@ class Xyt01SerialInterface(object):
 
     def __init__(self, debug=False):
         self.debug = debug
-        self.uart = UART(2, baudrate=9600, tx=Pin(4), rx=Pin(5))
+        self.uart = None
+        self.create_uart()
         self.xyt01_power_select_pin = Pin(7, Pin.OUT)
         self.xyt01_power_select_pin.value(1)
         self.temp_c = None
@@ -170,12 +171,29 @@ class Xyt01SerialInterface(object):
         instance = cls(debug=debug)
         return instance
 
+    def create_uart(self):
+        if self.uart is not None:
+            self.disable_uart()
+        self.uart = UART(2, baudrate=9600, tx=Pin(4), rx=Pin(5))
+        print("Created UART.")
+
+    def disable_uart(self):
+        if self.uart is None:
+            return
+        self.uart.deinit()
+        self.uart = None
+        Pin(4, Pin.IN, None)
+        Pin(5, Pin.IN, None)
+        print("Disabled UART.")
+
     async def reset_xyt01(self):
+        self.disable_uart()
         print("Cutting power to xyt01 ...")
         self.xyt01_power_select_pin.value(0)
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
         print("Restoring power to xyt01 ...")
         self.xyt01_power_select_pin.value(1)
+        self.create_uart()
 
     async def poll_for_requests(self):
         request_queue = self.request_queue
@@ -202,10 +220,7 @@ class Xyt01SerialInterface(object):
         self.machine.trigger("timeout", self)
 
     async def restart_state(self):
-        xyt01_power_pin = self.xyt01_power_select_pin
-        xyt01_power_pin.value(0)
-        await asyncio.sleep(2)
-        xyt01_power_pin.value(1)
+        await self.reset_xyt01()
         await asyncio.sleep(3)
         self.machine.trigger("restarted_xyt01", self)
 

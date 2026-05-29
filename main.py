@@ -17,9 +17,19 @@ from wificonfig import passwd as wifi_passwd
 from wificonfig import ssid
 from xyt01 import Xyt01SerialInterface
 
-target_temperature = 30.0
+target_temperature = 20.0
 
 
+def init_xyt01_board():
+    print("Initializing XY-T01 board ...")
+    xyt01_power_select_pin = machine.Pin(7, machine.Pin.OUT)
+    xyt01_power_select_pin.value(1)
+    sleep(5)
+    print("XY-T01 board initialized.")
+
+
+# Initialize xyt01 board
+init_xyt01_board()
 # network configuration
 nic = network.WLAN(network.STA_IF)
 nic.active(True)
@@ -32,6 +42,11 @@ except TypeError:
     )
 print(f"Constant for no power management: {network.WLAN.PM_NONE}")
 print(f"NIC power management: {nic.config('pm')}")
+power = nic.config("txpower")
+print(f"Initial NIC power setting: {power} dBm")
+nic.config(txpower=2)
+power = nic.config("txpower")
+print(f"New NIC power setting: {power} dBm")
 nic.connect(ssid, wifi_passwd)
 print("Waiting for connection...")
 while not nic.isconnected():
@@ -80,11 +95,14 @@ async def index(request):
         target_temperature = target_c
         await asyncio.sleep(1)
         return redirect(request.path)
-    html = render(stemp_c, stemp_f, relay_state, starget_c, starget_f)
+    html = render(hostname, stemp_c, stemp_f, relay_state, starget_c, starget_f)
     return (
         html,
         200,
-        {"Content-Type": "text/html; charset=utf-8"},
+        {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+        },
     )
 
 
@@ -92,7 +110,14 @@ async def index(request):
 async def style(request):
     with open("/www/style.css", "r") as f:
         css = f.read()
-    return (css, 200, {"Content-Type": "text/css; charset=utf-8"})
+    return (
+        css,
+        200,
+        {
+            "Content-Type": "text/css; charset=utf-8",
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+        },
+    )
 
 
 @app.route("/settings")
@@ -125,7 +150,10 @@ async def settings(request):
     return (
         html,
         200,
-        {"Content-Type": "text/html; charset=utf-8"},
+        {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+        },
     )
 
 
@@ -156,7 +184,10 @@ async def set_temperature(request):
                 "</html>"
             ),
             200,
-            {"Content-Type": "text/html; charset=utf-8"},
+            {
+                "Content-Type": "text/html; charset=utf-8",
+                "Cache-Control": "no-store, no-cache, must-revalidate",
+            },
         )
     elif request.method == "POST":
         temperature = request.form.get("temperature")
@@ -176,7 +207,10 @@ async def set_temperature(request):
                 "</html>"
             ),
             200,
-            {"Content-Type": "text/html; charset=utf-8"},
+            {
+                "Content-Type": "text/html; charset=utf-8",
+                "Cache-Control": "no-store, no-cache, must-revalidate",
+            },
         )
 
 

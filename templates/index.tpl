@@ -1,4 +1,4 @@
-{% args temp_c, temp_f, status, target_c, target_f %}
+{% args hostname, temp_c, temp_f, status, target_c, target_f %}
 <!DOCTYPE html>
 <html>
 <head>
@@ -11,7 +11,7 @@
 <body>
     <div class="container">
         <header>
-            <h1>Thermostat01</h1>
+            <h1>{{hostname}}</h1>
             <a href="settings" class="nav-btn">⚙ Settings</a>
         </header>
 
